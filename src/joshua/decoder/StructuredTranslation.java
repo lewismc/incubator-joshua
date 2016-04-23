@@ -10,7 +10,10 @@ import java.util.List;
 import java.util.Map;
 
 import joshua.decoder.ff.FeatureFunction;
+import joshua.decoder.ff.FeatureVector;
 import joshua.decoder.hypergraph.HyperGraph;
+import joshua.decoder.hypergraph.KBestExtractor.DerivationState;
+import joshua.decoder.io.DeNormalize;
 import joshua.decoder.hypergraph.ViterbiFeatureVectorWalkerFunction;
 import joshua.decoder.hypergraph.ViterbiOutputStringWalkerFunction;
 import joshua.decoder.hypergraph.WalkerFunction;
@@ -30,77 +33,51 @@ import joshua.decoder.segment_file.Sentence;
 public class StructuredTranslation {
   
   private final Sentence sourceSentence;
-  private final List<FeatureFunction> featureFunctions;
+  private final DerivationState derivationRoot;
+  private final JoshuaConfiguration joshuaConfiguration;
   
-  private final String translationString;
-  private final List<String> translationTokens;
-  private final float translationScore;
-  private List<List<Integer>> translationWordAlignments;
-  private Map<String,Float> translationFeatures;
-  private final float extractionTime;
+  private String translationString = null;
+  private List<String> translationTokens = null;
+  private String translationWordAlignments = null;
+  private FeatureVector translationFeatures = null;
+  private float extractionTime = 0.0f;
+  private float translationScore = 0.0f;
   
+  /* If we need to replay the features, this will get set to true, so that it's only done once */
+  private boolean featuresReplayed = false;
+
   public StructuredTranslation(final Sentence sourceSentence,
-      final HyperGraph hypergraph,
-      final List<FeatureFunction> featureFunctions) {
-    
-      final long startTime = System.currentTimeMillis();
-      
-      this.sourceSentence = sourceSentence;
-      this.featureFunctions = featureFunctions;
-      this.translationString = extractViterbiString(hypergraph);
-      this.translationTokens = extractTranslationTokens();
-      this.translationScore = extractTranslationScore(hypergraph);
-      this.translationFeatures = extractViterbiFeatures(hypergraph);
-      this.translationWordAlignments = extractViterbiWordAlignment(hypergraph);
-      this.extractionTime = (System.currentTimeMillis() - startTime) / 1000.0f;
-  }
-  
-  private Map<String,Float> extractViterbiFeatures(final HyperGraph hypergraph) {
-    if (hypergraph == null) {
-      return emptyMap(); 
-    } else {
-      ViterbiFeatureVectorWalkerFunction viterbiFeatureVectorWalker = new ViterbiFeatureVectorWalkerFunction(featureFunctions, sourceSentence);
-      walk(hypergraph.goalNode, viterbiFeatureVectorWalker);
-      return new HashMap<String,Float>(viterbiFeatureVectorWalker.getFeaturesMap());
-    }
+      final DerivationState derivationRoot,
+      JoshuaConfiguration config) {
+
+    this(sourceSentence, derivationRoot, config, true);
   }
 
-  private List<List<Integer>> extractViterbiWordAlignment(final HyperGraph hypergraph) {
-    if (hypergraph == null) {
-      return emptyList();
-    } else {
-      final WordAlignmentExtractor wordAlignmentWalker = new WordAlignmentExtractor();
-      walk(hypergraph.goalNode, wordAlignmentWalker);
-      return wordAlignmentWalker.getFinalWordAlignments();
+  
+  public StructuredTranslation(final Sentence sourceSentence,
+      final DerivationState derivationRoot,
+      JoshuaConfiguration config,
+      boolean now) {
+
+    final long startTime = System.currentTimeMillis();
+
+    this.sourceSentence = sourceSentence;
+    this.derivationRoot = derivationRoot;
+    this.joshuaConfiguration = config;
+
+    if (now) {
+      getTranslationString();
+      getTranslationTokens();
+      getTranslationScore();
+      getTranslationFeatures();
+      getTranslationWordAlignments();
     }
+    this.translationScore = getTranslationScore();
+
+    this.extractionTime = (System.currentTimeMillis() - startTime) / 1000.0f;
   }
   
-  private float extractTranslationScore(final HyperGraph hypergraph) {
-    if (hypergraph == null) {
-      return 0;
-    } else {
-      return hypergraph.goalNode.getScore();
-    }
-  }
-  
-  private String extractViterbiString(final HyperGraph hypergraph) {
-    if (hypergraph == null) {
-      return sourceSentence.source();
-    } else {
-      final WalkerFunction viterbiOutputStringWalker = new ViterbiOutputStringWalkerFunction();
-      walk(hypergraph.goalNode, viterbiOutputStringWalker);
-      return viterbiOutputStringWalker.toString();
-    }
-  }
-  
-  private List<String> extractTranslationTokens() {
-    if (translationString.isEmpty()) {
-      return emptyList();
-    } else {
-      return asList(translationString.split("\\s+"));
-    }
-  }
-  
+
   // Getters to use upstream
   
   public Sentence getSourceSentence() {
@@ -112,25 +89,60 @@ public class StructuredTranslation {
   }
 
   public String getTranslationString() {
-    return translationString;
+    if (this.translationString == null) {
+      if (derivationRoot == null) {
+        this.translationString = sourceSentence.source();
+      } else {
+        this.translationString = derivationRoot.getHypothesis();
+      }
+    }
+    return this.translationString;
   }
 
   public List<String> getTranslationTokens() {
+    if (this.translationTokens == null) {
+      String trans = getTranslationString();
+      if (trans.isEmpty()) {
+        this.translationTokens = emptyList();
+      } else {
+        this.translationTokens = asList(trans.split("\\s+"));
+      }
+    }
+    
     return translationTokens;
   }
 
   public float getTranslationScore() {
+    if (derivationRoot == null) {
+      this.translationScore = 0.0f;
+    } else {
+      this.translationScore = derivationRoot.getModelCost();
+    }
+    
     return translationScore;
   }
 
   /**
    * Returns a list of target to source alignments.
    */
-  public List<List<Integer>> getTranslationWordAlignments() {
-    return translationWordAlignments;
+  public String getTranslationWordAlignments() {
+    if (this.translationWordAlignments == null) {
+      if (derivationRoot == null)
+        this.translationWordAlignments = "";
+      else {
+        WordAlignmentExtractor wordAlignmentExtractor = new WordAlignmentExtractor();
+        derivationRoot.visit(wordAlignmentExtractor);
+        this.translationWordAlignments = wordAlignmentExtractor.toString();
+      }
+    }
+
+    return this.translationWordAlignments;
   }
   
-  public Map<String,Float> getTranslationFeatures() {
+  public FeatureVector getTranslationFeatures() {
+    if (this.translationFeatures == null)
+      this.translationFeatures = derivationRoot.replayFeatures();
+
     return translationFeatures;
   }
   

@@ -34,6 +34,7 @@ import java.util.regex.Matcher;
 import joshua.corpus.Vocabulary;
 import joshua.decoder.BLEU;
 import joshua.decoder.JoshuaConfiguration;
+import joshua.decoder.StructuredTranslation;
 import joshua.decoder.chart_parser.ComputeNodeResult;
 import joshua.decoder.ff.FeatureFunction;
 import joshua.decoder.ff.FeatureVector;
@@ -167,33 +168,25 @@ public class KBestExtractor {
     // Determine the k-best hypotheses at each HGNode
     VirtualNode virtualNode = getVirtualNode(node);
     DerivationState derivationState = virtualNode.lazyKBestExtractOnNode(this, k);
+        
 //    DerivationState derivationState = getKthDerivation(node, k);
     if (derivationState != null) {
-      // ==== read the kbest from each hgnode and convert to output format
-      FeatureVector features = new FeatureVector();
 
-      /*
-       * To save space, the decoder only stores the model cost, no the individual feature values. If
-       * you want to output them, you have to replay them.
-       */
-      String hypothesis = null;
-      if (joshuaConfiguration.outputFormat.contains("%f")
-          || joshuaConfiguration.outputFormat.contains("%d"))
-        features = derivationState.replayFeatures();
-
-      hypothesis = derivationState.getHypothesis()
+      StructuredTranslation translation = new StructuredTranslation(
+          sentence, derivationState, joshuaConfiguration);
+      
+      String hypothesis = translation.getTranslationString()
           .replaceAll("-lsb-", "[")
           .replaceAll("-rsb-", "]")
           .replaceAll("-pipe-", "|");
-
 
       outputString = joshuaConfiguration.outputFormat
           .replace("%k", Integer.toString(k))
           .replace("%s", hypothesis)
           .replace("%S", DeNormalize.processSingleLine(hypothesis))
           .replace("%i", Integer.toString(sentence.id()))
-          .replace("%f", joshuaConfiguration.moses ? features.mosesString() : features.toString())
-          .replace("%c", String.format("%.3f", derivationState.cost));
+          .replace("%f", joshuaConfiguration.moses ? translation.getTranslationFeatures().mosesString() : translation.getTranslationFeatures().toString())
+          .replace("%c", String.format("%.3f", translation.getTranslationScore()));
 
       if (joshuaConfiguration.outputFormat.contains("%t")) {
         outputString = outputString.replace("%t", derivationState.getTree());
@@ -250,11 +243,11 @@ public class KBestExtractor {
       return;
 
     for (int k = 1; k <= topN; k++) {
-      String hypStr = getKthHyp(hg.goalNode, k);
-      if (null == hypStr)
+      String translation = getKthHyp(hg.goalNode, k);
+      if (null == translation)
         break;
 
-      out.write(hypStr);
+      out.write(translation);
       out.write("\n");
       out.flush();
     }
@@ -704,11 +697,11 @@ public class KBestExtractor {
     /**
      * Visits every state in the derivation in a depth-first order.
      */
-    private DerivationVisitor visit(DerivationVisitor visitor) {
+    public DerivationVisitor visit(DerivationVisitor visitor) {
       return visit(visitor, 0);
     }
 
-    private DerivationVisitor visit(DerivationVisitor visitor, int indent) {
+    public DerivationVisitor visit(DerivationVisitor visitor, int indent) {
 
       visitor.before(this, indent);
 
@@ -733,25 +726,25 @@ public class KBestExtractor {
       return visitor;
     }
 
-    private String getHypothesis() {
+    public String getHypothesis() {
       return getHypothesis(defaultSide);
     }
 
-    private String getTree() {
+    public String getTree() {
       return visit(new TreeExtractor()).toString();
     }
 
-    private String getHypothesis(Side side) {
+    public String getHypothesis(Side side) {
       return visit(new HypothesisExtractor(side)).toString();
     }
 
-    private FeatureVector replayFeatures() {
+    public FeatureVector replayFeatures() {
       FeatureReplayer fp = new FeatureReplayer();
       visit(fp);
       return fp.getFeatures();
     }
 
-    private String getDerivation() {
+    public String getDerivation() {
       return visit(new DerivationExtractor()).toString();
     }
 
@@ -811,7 +804,7 @@ public class KBestExtractor {
      */
     void after(DerivationState state, int level);
   }
-
+  
   /**
    * Extracts the hypothesis from the leaves of the tree using the generic (depth-first) visitor.
    * Since we're using the visitor, we can't just print out the words as we see them. We have to
@@ -878,7 +871,7 @@ public class KBestExtractor {
       return outputs.pop().replaceAll("<s> ", "").replace(" </s>", "");
     }
   }
-
+  
   /**
    * Assembles a Penn treebank format tree for a given derivation.
    */
